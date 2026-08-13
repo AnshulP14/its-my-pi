@@ -477,8 +477,8 @@ export class AgentSession {
 		}
 	}
 
-	private async _promoteProjectMemory(): Promise<void> {
-		if (!this._projectMemory || this._extensionMode !== "tui" || !this._extensionUIContext) return;
+	private _recordProjectMemoryCandidates(): void {
+		if (!this._projectMemory) return;
 		for (const entry of this.sessionManager.getBranch()) {
 			if (entry.type !== "memory" || entry.kind !== "reflection" || !entry.projectKind) continue;
 			const source = entry.sourceEntryIds.map((id) => this.sessionManager.getEntry(id)).find(Boolean);
@@ -492,6 +492,10 @@ export class AgentSession {
 				revision: projectRevision(this._cwd),
 			});
 		}
+	}
+
+	private async _promoteProjectMemory(): Promise<void> {
+		if (!this._projectMemory || this._extensionMode !== "tui" || !this._extensionUIContext) return;
 		for (const candidate of this._projectMemory.readyCandidates()) {
 			const evidence = this._projectMemory.evidence(candidate.id);
 			const choice = await this._extensionUIContext.select(
@@ -756,6 +760,7 @@ export class AgentSession {
 					},
 				});
 				if (changed) {
+					this._recordProjectMemoryCandidates();
 					this.agent.state.messages = this.sessionManager.buildSessionContext(
 						settings.injectionMaxTokens,
 					).messages;
