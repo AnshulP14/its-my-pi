@@ -649,6 +649,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_tree", { tree: sessionManager.getTree(), leafId: sessionManager.getLeafId() });
 			}
 
+			case "navigate_tree": {
+				const result = await session.navigateTree(command.targetId);
+				return success(id, "navigate_tree", { cancelled: result.cancelled });
+			}
+
 			case "get_last_assistant_text": {
 				const text = session.getLastAssistantText();
 				return success(id, "get_last_assistant_text", { text });

@@ -347,6 +347,17 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 		expect(chainIds).toEqual(entries.map((e) => e.id));
 	}, 90000);
 
+	test("should navigate the session tree", async () => {
+		await client.start();
+		await client.promptAndWait("Reply with just 'ok'");
+
+		const { entries } = await client.getEntries();
+		const targetId = entries[0].id;
+		const result = await client.navigateTree(targetId);
+		expect(result.cancelled).toBe(false);
+		expect((await client.getTree()).leafId).toBe(targetId);
+	}, 90000);
+
 	test("should retain pre-compaction entries in get_entries", async () => {
 		await client.start();
 

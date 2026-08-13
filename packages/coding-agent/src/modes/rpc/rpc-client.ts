@@ -414,6 +414,12 @@ export class RpcClient {
 		return this.getData<{ tree: SessionTreeNode[]; leafId: string | null }>(response);
 	}
 
+	/** Move the active session leaf to an entry in the tree. */
+	async navigateTree(targetId: string): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "navigate_tree", targetId });
+		return this.getData<{ cancelled: boolean }>(response);
+	}
+
 	/**
 	 * Get text of last assistant message.
 	 */
