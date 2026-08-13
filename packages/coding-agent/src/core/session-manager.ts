@@ -431,27 +431,23 @@ export function buildMemoryContextMessage(path: SessionEntry[], maxTokens: numbe
 	const superseded = new Set(memoryEntries.flatMap((entry) => (entry.kind === "supersedes" ? entry.supersedes : [])));
 	const active = memoryEntries.filter((entry) => entry.kind !== "supersedes" && !superseded.has(entry.id));
 	const selected: MemoryEntry[] = [];
-	let remainingTokens = maxTokens;
+	let remainingChars = maxTokens * 4;
+	const sections: string[] = [];
 	for (const kind of ["reflection", "observation"] as const) {
+		const heading = kind === "reflection" ? "Reflections" : "Observations";
+		const lines: string[] = [];
 		for (const entry of active.filter((candidate) => candidate.kind === kind).reverse()) {
-			const tokens = Math.ceil(entry.content.length / 4);
-			if (tokens > remainingTokens) continue;
+			const line = `- [${entry.id}] ${entry.content}`;
+			const prefix = lines.length === 0 ? (sections.length > 0 ? 2 : 0) + `## ${heading}\n`.length : 1;
+			if (prefix + line.length > remainingChars) continue;
 			selected.push(entry);
-			remainingTokens -= tokens;
+			lines.push(line);
+			remainingChars -= prefix + line.length;
 		}
+		if (lines.length > 0) sections.push(`## ${heading}\n${lines.join("\n")}`);
 	}
 	if (selected.length === 0) return undefined;
-
-	const render = (kind: "reflection" | "observation", heading: string): string => {
-		const records = selected.filter((entry) => entry.kind === kind);
-		return records.length > 0
-			? `## ${heading}\n${records.map((entry) => `- [${entry.id}] ${entry.content}`).join("\n")}`
-			: "";
-	};
-	const rendered = [render("reflection", "Reflections"), render("observation", "Observations")]
-		.filter(Boolean)
-		.join("\n\n");
-	const content = rendered.length > maxTokens * 4 ? rendered.slice(-maxTokens * 4) : rendered;
+	const content = sections.join("\n\n");
 	const latest = selected.at(-1)!;
 	return createCustomMessage("memory", content, false, undefined, latest.timestamp);
 }

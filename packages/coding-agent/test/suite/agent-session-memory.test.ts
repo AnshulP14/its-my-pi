@@ -108,4 +108,45 @@ describe("AgentSession memory", () => {
 			}),
 		);
 	});
+
+	it("supersedes a replaced reflection and preserves observation provenance", async () => {
+		const harness = await createHarness({
+			settings: {
+				compaction: { memory: { enabled: true, observeAfterTokens: 1, reflectAfterTokens: 1 } },
+			},
+		});
+		harnesses.push(harness);
+		const sourceId = harness.sessionManager.appendMessage({
+			role: "user",
+			content: "Cover India only.",
+			timestamp: 1,
+		});
+		const oldReflectionId = harness.sessionManager.appendMemory("reflection", "User wants India-only analysis.", [
+			sourceId,
+		]);
+		harness.setResponses([
+			fauxAssistantMessage("main response"),
+			fauxAssistantMessage('{"observations":["User expanded the scope to India and the US."]}'),
+			fauxAssistantMessage(
+				`{"reflections":["User wants analysis across India and the US."],"supersedes":["${oldReflectionId}"]}`,
+			),
+		]);
+
+		await harness.session.prompt("Also cover the US.");
+		for (let attempt = 0; attempt < 20; attempt++) {
+			if (
+				harness.sessionManager.getEntries().some((entry) => entry.type === "memory" && entry.kind === "supersedes")
+			) {
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		const records = harness.sessionManager.getEntries().filter((entry) => entry.type === "memory");
+		const replacement = records.find(
+			(entry) => entry.kind === "reflection" && entry.content === "User wants analysis across India and the US.",
+		);
+		expect(replacement?.sourceEntryIds).toContain(sourceId);
+		expect(records).toContainEqual(expect.objectContaining({ kind: "supersedes", supersedes: [oldReflectionId] }));
+	});
 });

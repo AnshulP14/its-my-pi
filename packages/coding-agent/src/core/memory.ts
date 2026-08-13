@@ -135,6 +135,7 @@ export async function updateSessionMemory(
 	const shouldObserve = sources.length > 0 && (options.force || sourceTokens >= settings.observeAfterTokens);
 	let newObservations: string[] = [];
 	let observedSourceEntryIds: string[] = [];
+	let reflectionSourceEntryIds: string[] = [];
 	let started = false;
 	const start = () => {
 		if (!started) {
@@ -172,23 +173,31 @@ export async function updateSessionMemory(
 		(memories.length > 0 || newObservations.length > 0) &&
 		(options.force || reflectionTokens >= settings.reflectAfterTokens);
 	if (shouldReflect) {
-		const observations = memories
-			.filter((entry) => entry.kind === "observation")
-			.map((entry) => entry.content)
-			.concat(newObservations)
-			.map((observation) => `- ${observation}`)
-			.join("\n");
+		const activeReflections = memories.filter((entry) => entry.kind === "reflection");
+		const activeObservations = memories.filter((entry) => entry.kind === "observation");
+		const existingReflections = activeReflections.map((entry) => `- [${entry.id}] ${entry.content}`).join("\n");
+		const observations = [
+			...activeObservations.map((entry) => `- [${entry.id}] ${entry.content}`),
+			...newObservations.map((observation) => `- [new] ${observation}`),
+		].join("\n");
+		reflectionSourceEntryIds = [
+			...new Set([
+				...activeReflections.flatMap((entry) => entry.sourceEntryIds),
+				...activeObservations.flatMap((entry) => entry.sourceEntryIds),
+				...observedSourceEntryIds,
+			]),
+		];
 		start();
 		const reflectionText = await completeMemoryRequest(
 			options.model,
-			`Consolidate durable session facts from these observations. Return JSON: {"reflections":[{"content":"...","projectKind":"convention|decision|failure|procedure"}],"supersedes":["memory-entry-id"]}. Include projectKind only for facts worth corroborating across sessions. Supersede only obsolete reflections.\n\n${observations}`,
+			`Consolidate durable session facts from the evidence below. Return JSON: {"reflections":[{"content":"...","projectKind":"convention|decision|failure|procedure"}],"supersedes":["memory-entry-id"]}. Return only net-new facts or a replacement that is more specific or newer than an existing reflection. A superseded ID must appear in Existing reflections, and a returned reflection must preserve or update its fact. Do not supersede merely related facts. Include projectKind only for facts worth corroborating across sessions.\n\nExisting reflections:\n${existingReflections || "(none)"}\n\nObservations:\n${observations || "(none)"}`,
 			requestOptions,
 			options.streamFn,
 		);
 		if (!isCurrentBranch()) return false;
 		reflections.push(...parseReflections(reflectionText));
-		const reflectionIds = new Set(memories.filter((entry) => entry.kind === "reflection").map((entry) => entry.id));
-		reflectionSupersedes = parseSupersedes(reflectionText, "supersedes", reflectionIds);
+		const reflectionIds = new Set(activeReflections.map((entry) => entry.id));
+		reflectionSupersedes = reflections.length > 0 ? parseSupersedes(reflectionText, "supersedes", reflectionIds) : [];
 	}
 	for (const observation of newObservations) {
 		sessionManager.appendMemory("observation", observation, observedSourceEntryIds);
@@ -213,13 +222,19 @@ export async function updateSessionMemory(
 	}
 
 	for (const reflection of reflections) {
-		sessionManager.appendMemory("reflection", reflection.content, observedSourceEntryIds, [], reflection.projectKind);
+		sessionManager.appendMemory(
+			"reflection",
+			reflection.content,
+			reflectionSourceEntryIds,
+			[],
+			reflection.projectKind,
+		);
 	}
 	if (reflectionSupersedes.length > 0) {
 		sessionManager.appendMemory(
 			"supersedes",
 			"Superseded obsolete reflections.",
-			observedSourceEntryIds,
+			reflectionSourceEntryIds,
 			reflectionSupersedes,
 		);
 	}

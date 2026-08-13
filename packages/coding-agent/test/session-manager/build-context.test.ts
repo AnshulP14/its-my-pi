@@ -145,6 +145,22 @@ describe("buildSessionContext", () => {
 	});
 
 	describe("with compaction", () => {
+		it("keeps complete memory records when the context budget is tight", () => {
+			const entries: SessionEntry[] = [
+				memory("1", null, "reflection", "First complete reflection."),
+				memory("2", "1", "reflection", "Second complete reflection."),
+			];
+
+			const ctx = buildSessionContext(entries, undefined, undefined, 15);
+			const memoryMessage = ctx.messages[0];
+			expect(memoryMessage.role).toBe("custom");
+			if (memoryMessage.role === "custom") {
+				expect(memoryMessage.content.length).toBeLessThanOrEqual(60);
+				expect(memoryMessage.content).toContain("Second complete reflection.");
+				expect(memoryMessage.content).not.toContain("First complete");
+			}
+		});
+
 		it("injects active branch memory after the checkpoint and before retained transcript", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "first"),
