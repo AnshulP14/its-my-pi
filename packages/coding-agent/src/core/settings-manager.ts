@@ -20,9 +20,9 @@ export interface MemorySettings {
 	enabled?: boolean; // default: true
 	observeAfterTokens?: number; // default: 15000
 	reflectAfterTokens?: number; // default: 25000
-	observationsPoolMaxTokens?: number; // default: 12000
-	observationsPoolTargetTokens?: number; // default: 6000
-	injectionMaxTokens?: number; // default: 8000
+	observationsPoolMaxTokens?: number; // default: 16000
+	observationsPoolTargetTokens?: number; // default: 12000
+	injectionMaxTokens?: number; // default: 16000
 }
 
 export interface BranchSummarySettings {
@@ -809,9 +809,9 @@ export class SettingsManager {
 				enabled: this.settings.compaction?.memory?.enabled ?? true,
 				observeAfterTokens: this.settings.compaction?.memory?.observeAfterTokens ?? 15000,
 				reflectAfterTokens: this.settings.compaction?.memory?.reflectAfterTokens ?? 25000,
-				observationsPoolMaxTokens: this.settings.compaction?.memory?.observationsPoolMaxTokens ?? 12000,
-				observationsPoolTargetTokens: this.settings.compaction?.memory?.observationsPoolTargetTokens ?? 6000,
-				injectionMaxTokens: this.settings.compaction?.memory?.injectionMaxTokens ?? 8000,
+				observationsPoolMaxTokens: this.settings.compaction?.memory?.observationsPoolMaxTokens ?? 16000,
+				observationsPoolTargetTokens: this.settings.compaction?.memory?.observationsPoolTargetTokens ?? 12000,
+				injectionMaxTokens: this.settings.compaction?.memory?.injectionMaxTokens ?? 16000,
 			},
 		};
 	}

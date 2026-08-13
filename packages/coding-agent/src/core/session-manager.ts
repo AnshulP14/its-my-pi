@@ -422,7 +422,7 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	return [];
 }
 
-const MEMORY_CONTEXT_MAX_TOKENS = 8000;
+const MEMORY_CONTEXT_MAX_TOKENS = 16000;
 
 export function buildMemoryContextMessage(path: SessionEntry[], maxTokens: number): AgentMessage | undefined {
 	const memoryEntries = path.filter((entry): entry is MemoryEntry => entry.type === "memory");
