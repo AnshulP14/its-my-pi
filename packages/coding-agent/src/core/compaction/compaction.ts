@@ -114,6 +114,32 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 
 const DETERMINISTIC_TRANSCRIPT_MAX_TOKENS = 8192;
 const DETERMINISTIC_MEMORY_MAX_TOKENS = 2000;
+const DETERMINISTIC_REQUEST_MAX_CHARS = 2000;
+
+function latestUserRequest(messages: AgentMessage[]): string | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role === "user") {
+			const request = contentText(message.content, "").trim();
+			return request.length > DETERMINISTIC_REQUEST_MAX_CHARS
+				? `${request.slice(0, DETERMINISTIC_REQUEST_MAX_CHARS)}\n[Request truncated]`
+				: request || undefined;
+		}
+	}
+	return undefined;
+}
+
+function extractCommits(messages: AgentMessage[]): string[] {
+	const commits = new Set<string>();
+	for (const message of messages) {
+		if (message.role !== "bashExecution" || !/\bgit\s+(commit|log)\b/.test(message.command)) continue;
+		for (const line of message.output.split("\n")) {
+			const match = line.match(/^(?:\[[^\]]+\]\s+)?([0-9a-f]{7,40})\s+(.+)$/i);
+			if (match) commits.add(`${match[1]} ${match[2]}`);
+		}
+	}
+	return [...commits];
+}
 
 // ============================================================================
 // Token calculation
@@ -788,6 +814,8 @@ export function compactDeterministically(preparation: CompactionPreparation): Co
 		preparation;
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	const sourceMessages = [...messagesToSummarize, ...turnPrefixMessages];
+	const currentRequest = latestUserRequest(sourceMessages);
+	const commits = extractCommits(sourceMessages);
 	const transcriptMessages: AgentMessage[] = [];
 	let transcriptTokens = 0;
 	for (let index = sourceMessages.length - 1; index >= 0; index--) {
@@ -802,9 +830,14 @@ export function compactDeterministically(preparation: CompactionPreparation): Co
 	const serializedTranscript = serializeConversation(convertToLlm(transcriptMessages));
 	const transcript = serializedTranscript.slice(-DETERMINISTIC_TRANSCRIPT_MAX_TOKENS * 4);
 	const fileSections = [
+		"## Current Request",
+		currentRequest ? `- ${currentRequest}` : "- No user request found in compacted history.",
 		"## Files",
 		readFiles.length > 0 ? `### Read\n${readFiles.map((path) => `- ${path}`).join("\n")}` : "",
 		modifiedFiles.length > 0 ? `### Modified\n${modifiedFiles.map((path) => `- ${path}`).join("\n")}` : "",
+		commits.length > 0 ? `## Commits\n${commits.map((commit) => `- ${commit}`).join("\n")}` : "",
+		"## Outstanding Context",
+		"- Continue from session memory and the retained transcript; use session_memory_evidence with a memory ID to inspect source evidence.",
 	]
 		.filter(Boolean)
 		.join("\n\n");

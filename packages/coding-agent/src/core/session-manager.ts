@@ -444,7 +444,9 @@ export function buildMemoryContextMessage(path: SessionEntry[], maxTokens: numbe
 
 	const render = (kind: "reflection" | "observation", heading: string): string => {
 		const records = selected.filter((entry) => entry.kind === kind);
-		return records.length > 0 ? `## ${heading}\n${records.map((entry) => `- ${entry.content}`).join("\n")}` : "";
+		return records.length > 0
+			? `## ${heading}\n${records.map((entry) => `- [${entry.id}] ${entry.content}`).join("\n")}`
+			: "";
 	};
 	const rendered = [render("reflection", "Reflections"), render("observation", "Observations")]
 		.filter(Boolean)
@@ -534,7 +536,11 @@ export function buildSessionContext(
 		const insertionIndex = messages.findIndex(
 			(message) => message.role === "custom" && message.customType === "project-memory",
 		);
-		messages.splice(insertionIndex >= 0 ? insertionIndex + 1 : 0, 0, memoryMessage);
+		messages.splice(
+			insertionIndex >= 0 ? insertionIndex + 1 : compactionIndex >= 0 ? compactionIndex + 1 : 0,
+			0,
+			memoryMessage,
+		);
 	}
 	return { messages, thinkingLevel, model };
 }

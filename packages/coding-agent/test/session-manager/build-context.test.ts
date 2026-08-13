@@ -168,8 +168,8 @@ describe("buildSessionContext", () => {
 			expect(memoryMessage.role).toBe("custom");
 			if (memoryMessage.role === "custom") {
 				expect(memoryMessage.display).toBe(false);
-				expect(memoryMessage.content).toContain("## Reflections");
-				expect(memoryMessage.content).toContain("## Observations");
+				expect(memoryMessage.content).toContain("## Reflections\n- [4] Use the session tree for branching.");
+				expect(memoryMessage.content).toContain("## Observations\n- [5] The user chose deterministic compaction.");
 			}
 		});
 

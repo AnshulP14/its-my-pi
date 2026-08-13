@@ -15,6 +15,7 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "../src/core/compaction/index.ts";
+import { selectObservationSources } from "../src/core/memory.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
@@ -318,6 +319,15 @@ describe("compactDeterministically", () => {
 			messagesToSummarize: [
 				createUserMessage("Fix the login redirect."),
 				{
+					role: "bashExecution" as const,
+					command: "git log -1 --oneline",
+					output: "a1b2c3d fix(auth): preserve return URL",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					timestamp: Date.now(),
+				},
+				{
 					...createAssistantMessage("I found the redirect handler."),
 					content: [
 						{
@@ -345,6 +355,9 @@ describe("compactDeterministically", () => {
 		});
 		expect(result.usage).toBeUndefined();
 		expect(result.summary).toContain("## Files");
+		expect(result.summary).toContain("## Current Request\n\n- Fix the login redirect.");
+		expect(result.summary).toContain("## Commits\n- a1b2c3d fix(auth): preserve return URL");
+		expect(result.summary).toContain("## Outstanding Context");
 		expect(result.summary).toContain("src/login.ts");
 		expect(result.summary).toContain("[User]: Fix the login redirect.");
 		expect(result.summary).toContain('edit(path="src/login.ts", oldText="old", newText="new")');
@@ -360,8 +373,21 @@ describe("compactDeterministically", () => {
 		const preparation = prepareCompaction(entries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 });
 
 		expect(compactDeterministically(preparation!).summary).toContain(
-			"## Session Memory\n## Reflections\n- Preserve return URLs in login redirects.\n\n## Observations\n- The redirect must preserve the return URL.",
+			"## Session Memory\n## Reflections\n- [test-id-2] Preserve return URLs in login redirects.\n\n## Observations\n- [test-id-1] The redirect must preserve the return URL.",
 		);
+	});
+});
+
+describe("selectObservationSources", () => {
+	it("keeps older entries pending when the observation input is capped", () => {
+		const older = createMessageEntry(createUserMessage("older ".repeat(20)));
+		const newer = createMessageEntry(createUserMessage("newer request"));
+
+		const selected = selectObservationSources([older, newer], 10);
+
+		expect(selected.sourceEntryIds).toEqual([newer.id]);
+		expect(selected.sourceText).toContain("newer request");
+		expect(selected.sourceText).not.toContain("older");
 	});
 });
 

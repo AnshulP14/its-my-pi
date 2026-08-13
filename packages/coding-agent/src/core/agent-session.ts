@@ -2746,6 +2746,44 @@ export class AgentSession {
 					read: { autoResizeImages },
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
 				});
+		const sessionManager = this.sessionManager;
+		baseToolDefinitions.session_memory_evidence = {
+			name: "session_memory_evidence",
+			label: "session_memory_evidence",
+			description: "Read the source session entries for a memory ID shown in session memory.",
+			parameters: Type.Object({ id: Type.String({ description: "Session memory ID" }) }),
+			async execute(_toolCallId, params) {
+				const id = (params as { id: string }).id;
+				const memory = sessionManager.getEntry(id);
+				if (memory?.type !== "memory") {
+					return {
+						content: [{ type: "text" as const, text: "No session memory found for that ID." }],
+						details: { id, sourceEntryIds: [] },
+					};
+				}
+				const evidence = memory.sourceEntryIds.flatMap((sourceId) => {
+					const source = sessionManager.getEntry(sourceId);
+					if (source?.type !== "message") return [];
+					let text: string;
+					switch (source.message.role) {
+						case "bashExecution":
+							text = `${source.message.command}\n${source.message.output}`;
+							break;
+						case "branchSummary":
+						case "compactionSummary":
+							text = source.message.summary;
+							break;
+						default:
+							text = contentText(source.message.content, "");
+					}
+					return [`[${source.id}] ${text}`];
+				});
+				return {
+					content: [{ type: "text" as const, text: evidence.join("\n\n") || "No source entries found." }],
+					details: { id, sourceEntryIds: memory.sourceEntryIds },
+				};
+			},
+		};
 		if (this._projectMemory) {
 			const projectMemory = this._projectMemory;
 			baseToolDefinitions.memory_search = {

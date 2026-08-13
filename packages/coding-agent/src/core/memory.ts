@@ -11,6 +11,28 @@ const MEMORY_SYSTEM_PROMPT =
 	"Extract session memory. Return only the requested JSON. Do not continue the conversation.";
 const MEMORY_INPUT_MAX_TOKENS = 32768;
 
+export function selectObservationSources(
+	sources: SessionMessageEntry[],
+	maxTokens: number = MEMORY_INPUT_MAX_TOKENS,
+): { sourceEntryIds: string[]; sourceText: string } {
+	const maxChars = maxTokens * 4;
+	const selected: SessionMessageEntry[] = [];
+	let length = 0;
+	for (let index = sources.length - 1; index >= 0; index--) {
+		const source = sources[index];
+		const text = serializeConversation(convertToLlm([source.message]));
+		const separatorLength = selected.length > 0 && text.length > 0 ? 2 : 0;
+		if (selected.length > 0 && length + separatorLength + text.length > maxChars) break;
+		selected.unshift(source);
+		length += separatorLength + text.length;
+	}
+	const serialized = serializeConversation(convertToLlm(selected.map((entry) => entry.message)));
+	return {
+		sourceEntryIds: selected.map((entry) => entry.id),
+		sourceText: serialized.length > maxChars ? serialized.slice(-maxChars) : serialized,
+	};
+}
+
 function parseStringArray(text: string, key: string): string[] {
 	try {
 		const value = JSON.parse(text) as Record<string, unknown>;
@@ -109,10 +131,10 @@ export async function updateSessionMemory(
 		(total, entry) => total + (entry.type === "message" ? estimateTokens(entry.message) : 0),
 		0,
 	);
-	const sourceEntryIds = sources.map((entry) => entry.id);
 	const requestOptions = { apiKey: options.apiKey, headers: options.headers, env: options.env };
 	const shouldObserve = sources.length > 0 && (options.force || sourceTokens >= settings.observeAfterTokens);
 	let newObservations: string[] = [];
+	let observedSourceEntryIds: string[] = [];
 	let started = false;
 	const start = () => {
 		if (!started) {
@@ -121,13 +143,13 @@ export async function updateSessionMemory(
 		}
 	};
 	if (shouldObserve) {
-		const serializedSources = serializeConversation(convertToLlm(sources.map((entry) => entry.message)));
-		const sourceText = serializedSources.slice(-MEMORY_INPUT_MAX_TOKENS * 4);
+		const { sourceEntryIds, sourceText } = selectObservationSources(sources);
+		observedSourceEntryIds = sourceEntryIds;
 		start();
 		const observationText = await completeMemoryRequest(
 			options.model,
 			`Extract concise, factual observations from this session span. Return JSON: {"observations":["..."]}.\n\n${
-				sourceText.length < serializedSources.length ? "[Earlier transcript omitted]\n\n" : ""
+				sourceEntryIds.length < sources.length ? "[Earlier transcript omitted]\n\n" : ""
 			}${sourceText}`,
 			requestOptions,
 			options.streamFn,
@@ -168,9 +190,8 @@ export async function updateSessionMemory(
 		const reflectionIds = new Set(memories.filter((entry) => entry.kind === "reflection").map((entry) => entry.id));
 		reflectionSupersedes = parseSupersedes(reflectionText, "supersedes", reflectionIds);
 	}
-
 	for (const observation of newObservations) {
-		sessionManager.appendMemory("observation", observation, sourceEntryIds);
+		sessionManager.appendMemory("observation", observation, observedSourceEntryIds);
 	}
 	const observations = activeMemory(sessionManager.getBranch()).filter((entry) => entry.kind === "observation");
 	const observationTokens = observations.reduce((total, entry) => total + Math.ceil(entry.content.length / 4), 0);
@@ -192,18 +213,23 @@ export async function updateSessionMemory(
 	}
 
 	for (const reflection of reflections) {
-		sessionManager.appendMemory("reflection", reflection.content, sourceEntryIds, [], reflection.projectKind);
+		sessionManager.appendMemory("reflection", reflection.content, observedSourceEntryIds, [], reflection.projectKind);
 	}
 	if (reflectionSupersedes.length > 0) {
 		sessionManager.appendMemory(
 			"supersedes",
 			"Superseded obsolete reflections.",
-			sourceEntryIds,
+			observedSourceEntryIds,
 			reflectionSupersedes,
 		);
 	}
 	if (observationSupersedes.length > 0) {
-		sessionManager.appendMemory("supersedes", "Pruned stale observations.", sourceEntryIds, observationSupersedes);
+		sessionManager.appendMemory(
+			"supersedes",
+			"Pruned stale observations.",
+			observedSourceEntryIds,
+			observationSupersedes,
+		);
 	}
 
 	return true;
