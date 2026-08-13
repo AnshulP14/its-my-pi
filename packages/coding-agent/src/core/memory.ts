@@ -25,6 +25,27 @@ function parseSupersedes(text: string, key: string, validIds: Set<string>): stri
 	return parseStringArray(text, key).filter((id) => validIds.has(id));
 }
 
+type Reflection = { content: string; projectKind?: MemoryEntry["projectKind"] };
+
+function parseReflections(text: string): Reflection[] {
+	try {
+		const reflections = (JSON.parse(text) as Record<string, unknown>).reflections;
+		if (!Array.isArray(reflections)) return [];
+		return reflections.flatMap((reflection): Reflection[] => {
+			if (typeof reflection === "string") return [{ content: reflection }];
+			if (!reflection || typeof reflection !== "object") return [];
+			const { content, projectKind } = reflection as { content?: unknown; projectKind?: unknown };
+			return typeof content === "string" &&
+				(projectKind === undefined ||
+					["convention", "decision", "failure", "procedure"].includes(projectKind as string))
+				? [{ content, projectKind: projectKind as Reflection["projectKind"] }]
+				: [];
+		});
+	} catch {
+		return [];
+	}
+}
+
 function activeMemory(entries: SessionEntry[]): MemoryEntry[] {
 	const memory = entries.filter((entry): entry is MemoryEntry => entry.type === "memory");
 	const superseded = new Set(memory.flatMap((entry) => (entry.kind === "supersedes" ? entry.supersedes : [])));
@@ -115,7 +136,7 @@ export async function updateSessionMemory(
 		newObservations = parseStringArray(observationText, "observations");
 	}
 	const memories = activeMemory(sessionManager.getBranch());
-	const reflections: string[] = [];
+	const reflections: Reflection[] = [];
 	let reflectionSupersedes: string[] = [];
 	let observationSupersedes: string[] = [];
 
@@ -138,12 +159,12 @@ export async function updateSessionMemory(
 		start();
 		const reflectionText = await completeMemoryRequest(
 			options.model,
-			`Consolidate durable session facts from these observations. Return JSON: {"reflections":["..."],"supersedes":["memory-entry-id"]}. Supersede only obsolete reflections.\n\n${observations}`,
+			`Consolidate durable session facts from these observations. Return JSON: {"reflections":[{"content":"...","projectKind":"convention|decision|failure|procedure"}],"supersedes":["memory-entry-id"]}. Include projectKind only for facts worth corroborating across sessions. Supersede only obsolete reflections.\n\n${observations}`,
 			requestOptions,
 			options.streamFn,
 		);
 		if (!isCurrentBranch()) return false;
-		reflections.push(...parseStringArray(reflectionText, "reflections"));
+		reflections.push(...parseReflections(reflectionText));
 		const reflectionIds = new Set(memories.filter((entry) => entry.kind === "reflection").map((entry) => entry.id));
 		reflectionSupersedes = parseSupersedes(reflectionText, "supersedes", reflectionIds);
 	}
@@ -171,7 +192,7 @@ export async function updateSessionMemory(
 	}
 
 	for (const reflection of reflections) {
-		sessionManager.appendMemory("reflection", reflection, sourceEntryIds);
+		sessionManager.appendMemory("reflection", reflection.content, sourceEntryIds, [], reflection.projectKind);
 	}
 	if (reflectionSupersedes.length > 0) {
 		sessionManager.appendMemory(

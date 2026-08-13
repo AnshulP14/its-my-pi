@@ -95,6 +95,7 @@ export interface MemoryEntry extends SessionEntryBase {
 	type: "memory";
 	kind: "observation" | "reflection" | "supersedes";
 	content: string;
+	projectKind?: "convention" | "decision" | "failure" | "procedure";
 	sourceEntryIds: string[];
 	supersedes: string[];
 }
@@ -178,6 +179,11 @@ export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
 	model: { provider: string; modelId: string } | null;
+}
+
+export interface ProjectMemoryContext {
+	content: string;
+	timestamp: string;
 }
 
 export interface SessionInfo {
@@ -504,14 +510,29 @@ export function buildSessionContext(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 	memoryTokenBudget: number = MEMORY_CONTEXT_MAX_TOKENS,
+	projectMemoryContext?: ProjectMemoryContext,
 ): SessionContext {
 	const path = buildSessionPath(entries, leafId, byId);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const messages = buildContextEntries(entries, leafId, byId).flatMap(sessionEntryToContextMessages);
+	const compactionIndex = messages.findIndex((message) => message.role === "compactionSummary");
+	if (projectMemoryContext) {
+		messages.splice(
+			compactionIndex >= 0 ? compactionIndex + 1 : 0,
+			0,
+			createCustomMessage(
+				"project-memory",
+				projectMemoryContext.content,
+				false,
+				undefined,
+				projectMemoryContext.timestamp,
+			),
+		);
+	}
 	const memoryMessage = buildMemoryContextMessage(path, memoryTokenBudget);
 	if (memoryMessage) {
-		const compactionIndex = messages.findIndex((message) => message.role === "compactionSummary");
-		messages.splice(compactionIndex >= 0 ? compactionIndex + 1 : 0, 0, memoryMessage);
+		const insertionIndex = messages.findIndex((message) => message.role === "project-memory");
+		messages.splice(insertionIndex >= 0 ? insertionIndex + 1 : 0, 0, memoryMessage);
 	}
 	return { messages, thinkingLevel, model };
 }
@@ -909,6 +930,7 @@ export class SessionManager {
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
+	private projectMemoryContext: ProjectMemoryContext | undefined;
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
@@ -1170,6 +1192,7 @@ export class SessionManager {
 		content: string,
 		sourceEntryIds: string[],
 		supersedes: string[] = [],
+		projectKind?: MemoryEntry["projectKind"],
 	): string {
 		const entry: MemoryEntry = {
 			type: "memory",
@@ -1178,6 +1201,7 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			kind,
 			content,
+			projectKind,
 			sourceEntryIds,
 			supersedes,
 		};
@@ -1348,8 +1372,18 @@ export class SessionManager {
 	 * Build the session context (what gets sent to the LLM).
 	 * Uses tree traversal from current leaf.
 	 */
+	setProjectMemoryContext(context: ProjectMemoryContext | undefined): void {
+		this.projectMemoryContext = context;
+	}
+
 	buildSessionContext(memoryTokenBudget?: number): SessionContext {
-		return buildSessionContext(this.getEntries(), this.leafId, this.byId, memoryTokenBudget);
+		return buildSessionContext(
+			this.getEntries(),
+			this.leafId,
+			this.byId,
+			memoryTokenBudget,
+			this.projectMemoryContext,
+		);
 	}
 
 	/**
