@@ -13,14 +13,14 @@ For TypeScript definitions in your project, inspect `node_modules/@earendil-work
 
 ## Overview
 
-Pi has two summarization mechanisms:
+Pi has deterministic compaction and LLM branch summarization:
 
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
-| Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
+| Compaction | Context exceeds threshold, or `/compact` | Preserve a bounded transcript and file operations to free context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
-Both use the same structured summary format and track file operations cumulatively. Compaction and branch-summary requests use fresh routing session IDs and, where supported by the provider, disable prompt-cache writes because these one-off prompts are unlikely to be reused.
+Both track file operations cumulatively. Branch-summary requests use fresh routing session IDs and, where supported by the provider, disable prompt-cache writes because these one-off prompts are unlikely to be reused.
 
 ## Compaction
 
@@ -32,15 +32,15 @@ Auto-compaction triggers when:
 contextTokens > contextWindow - reserveTokens
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
+By default, `reserveTokens` is 32768 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the next LLM response.
 
-You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
+You can also trigger manually with `/compact`.
 
 ### How It Works
 
-1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
+1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 8k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
+3. **Create checkpoint**: Serialize the newest 8k tokens of the extracted transcript and record cumulative file operations; this makes no LLM or auth request
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
 5. **Rebuilds context**: Session rebuilds the context for the next request, using summary + messages from `firstKeptEntryId` onwards
 
@@ -102,9 +102,7 @@ Split turn (one huge turn exceeds budget):
   turnPrefixMessages = [usr, ass, tool, ass, tool, tool]
 ```
 
-For split turns, Pi generates two summaries and merges them:
-1. **History summary**: Previous context (if any)
-2. **Turn prefix summary**: The early part of the split turn
+For split turns, the turn prefix is included in the deterministic transcript checkpoint.
 
 ### Cut Point Rules
 
@@ -141,7 +139,7 @@ interface CompactionDetails {
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work.
+Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations and has no `usage`; extension-provided summaries may include LLM usage.
 
 See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
 
@@ -212,49 +210,25 @@ Same as compaction, extensions can store custom data in `details`.
 
 See [`collectEntriesForBranchSummary()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts), [`prepareBranchEntries()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts), and [`generateBranchSummary()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) for the implementation.
 
-## Summary Format
+## Checkpoint Format
 
-Both compaction and branch summarization use the same structured format:
+Branch summarization uses a structured LLM summary. Built-in compaction instead stores a deterministic checkpoint:
 
 ```markdown
-## Goal
-[What the user is trying to accomplish]
+## Files
+### Read
+- path/to/file1.ts
 
-## Constraints & Preferences
-- [Requirements mentioned by user]
+### Modified
+- path/to/changed.ts
 
-## Progress
-### Done
-- [x] [Completed tasks]
-
-### In Progress
-- [ ] [Current work]
-
-### Blocked
-- [Issues, if any]
-
-## Key Decisions
-- **[Decision]**: [Rationale]
-
-## Next Steps
-1. [What should happen next]
-
-## Critical Context
-- [Data needed to continue]
-
-<read-files>
-path/to/file1.ts
-path/to/file2.ts
-</read-files>
-
-<modified-files>
-path/to/changed.ts
-</modified-files>
+## Transcript
+[Recent serialized transcript]
 ```
 
 ### Message Serialization
 
-Before summarization, messages are serialized to text via [`serializeConversation()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/utils.ts):
+For its transcript checkpoint, compaction serializes messages via [`serializeConversation()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/utils.ts):
 
 ```
 [User]: What they said
@@ -264,7 +238,7 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 [Tool result]: Output from tool
 ```
 
-This prevents the model from treating it as a conversation to continue.
+This makes the checkpoint mechanically derived and bounded.
 
 Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
 
@@ -386,8 +360,16 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 {
   "compaction": {
     "enabled": true,
-    "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "reserveTokens": 32768,
+    "keepRecentTokens": 8192,
+    "memory": {
+      "enabled": true,
+      "observeAfterTokens": 15000,
+      "reflectAfterTokens": 25000,
+      "observationsPoolMaxTokens": 12000,
+      "observationsPoolTargetTokens": 6000,
+      "injectionMaxTokens": 8000
+    }
   }
 }
 ```
@@ -395,7 +377,8 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable auto-compaction |
-| `reserveTokens` | `16384` | Tokens to reserve for LLM response |
-| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `reserveTokens` | `32768` | Tokens to reserve for the next LLM response |
+| `keepRecentTokens` | `8192` | Recent tokens to keep outside the checkpoint |
+| `memory.*` | See above | Session-local background observations and reflections injected after the checkpoint |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.

@@ -142,6 +142,7 @@ import {
 	BranchSummaryStatusIndicator,
 	CompactionStatusIndicator,
 	IdleStatus,
+	MemoryStatusIndicator,
 	RetryStatusIndicator,
 	type StatusIndicator,
 	WorkingStatusIndicator,
@@ -3281,6 +3282,16 @@ export class InteractiveMode {
 
 			case "agent_settled":
 				await this.checkShutdownRequested();
+				break;
+
+			case "memory_update_start":
+				this.showStatusIndicator(new MemoryStatusIndicator(this.ui));
+				this.ui.requestRender();
+				break;
+
+			case "memory_update_end":
+				this.clearStatusIndicator("memory");
+				this.ui.requestRender();
 				break;
 
 			case "compaction_start": {

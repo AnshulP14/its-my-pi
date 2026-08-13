@@ -110,7 +110,16 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
 	const sessionManager = SessionManager.inMemory();
-	const settingsManager = SettingsManager.inMemory(options.settings);
+	const settingsManager = SettingsManager.inMemory({
+		...options.settings,
+		compaction: {
+			...options.settings?.compaction,
+			memory: {
+				enabled: false,
+				...options.settings?.compaction?.memory,
+			},
+		},
+	});
 
 	const authStorage = AuthStorage.inMemory();
 	if (withConfiguredAuth) {

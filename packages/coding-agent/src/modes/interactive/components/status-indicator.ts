@@ -4,7 +4,7 @@ import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { keyText } from "./keybinding-hints.ts";
 
-export type StatusIndicatorKind = "working" | "retry" | "compaction" | "branchSummary";
+export type StatusIndicatorKind = "working" | "retry" | "compaction" | "branchSummary" | "memory";
 
 export class StatusIndicator extends Loader {
 	readonly kind: StatusIndicatorKind;
@@ -98,6 +98,18 @@ export class BranchSummaryStatusIndicator extends StatusIndicator {
 			(spinner) => theme.fg("accent", spinner),
 			(text) => theme.fg("muted", text),
 			`Summarizing branch... (${keyText("app.interrupt")} to cancel)`,
+		);
+	}
+}
+
+export class MemoryStatusIndicator extends StatusIndicator {
+	constructor(ui: TUI) {
+		super(
+			"memory",
+			ui,
+			(spinner) => theme.fg("accent", spinner),
+			(text) => theme.fg("muted", text),
+			"Updating memory...",
 		);
 	}
 }

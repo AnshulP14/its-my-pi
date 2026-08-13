@@ -91,6 +91,14 @@ export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 	fromHook?: boolean;
 }
 
+export interface MemoryEntry extends SessionEntryBase {
+	type: "memory";
+	kind: "observation" | "reflection" | "supersedes";
+	content: string;
+	sourceEntryIds: string[];
+	supersedes: string[];
+}
+
 /**
  * Custom entry for extensions to store extension-specific data in the session.
  * Use customType to identify your extension's entries.
@@ -147,6 +155,7 @@ export type SessionEntry =
 	| ModelChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
+	| MemoryEntry
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
@@ -407,6 +416,38 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	return [];
 }
 
+const MEMORY_CONTEXT_MAX_TOKENS = 8000;
+
+function buildMemoryContextMessage(path: SessionEntry[], maxTokens: number): AgentMessage | undefined {
+	const memoryEntries = path.filter((entry): entry is MemoryEntry => entry.type === "memory");
+	if (memoryEntries.length === 0) return undefined;
+
+	const superseded = new Set(memoryEntries.flatMap((entry) => (entry.kind === "supersedes" ? entry.supersedes : [])));
+	const active = memoryEntries.filter((entry) => entry.kind !== "supersedes" && !superseded.has(entry.id));
+	const selected: MemoryEntry[] = [];
+	let remainingTokens = maxTokens;
+	for (const kind of ["reflection", "observation"] as const) {
+		for (const entry of active.filter((candidate) => candidate.kind === kind).reverse()) {
+			const tokens = Math.ceil(entry.content.length / 4);
+			if (tokens > remainingTokens) continue;
+			selected.push(entry);
+			remainingTokens -= tokens;
+		}
+	}
+	if (selected.length === 0) return undefined;
+
+	const render = (kind: "reflection" | "observation", heading: string): string => {
+		const records = selected.filter((entry) => entry.kind === kind);
+		return records.length > 0 ? `## ${heading}\n${records.map((entry) => `- ${entry.content}`).join("\n")}` : "";
+	};
+	const rendered = [render("reflection", "Reflections"), render("observation", "Observations")]
+		.filter(Boolean)
+		.join("\n\n");
+	const content = rendered.length > maxTokens * 4 ? rendered.slice(-maxTokens * 4) : rendered;
+	const latest = selected.at(-1)!;
+	return createCustomMessage("memory", content, false, undefined, latest.timestamp);
+}
+
 /**
  * Build the active, compaction-aware session entry list.
  *
@@ -462,10 +503,16 @@ export function buildSessionContext(
 	entries: SessionEntry[],
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
+	memoryTokenBudget: number = MEMORY_CONTEXT_MAX_TOKENS,
 ): SessionContext {
 	const path = buildSessionPath(entries, leafId, byId);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const messages = buildContextEntries(entries, leafId, byId).flatMap(sessionEntryToContextMessages);
+	const memoryMessage = buildMemoryContextMessage(path, memoryTokenBudget);
+	if (memoryMessage) {
+		const compactionIndex = messages.findIndex((message) => message.role === "compactionSummary");
+		messages.splice(compactionIndex >= 0 ? compactionIndex + 1 : 0, 0, memoryMessage);
+	}
 	return { messages, thinkingLevel, model };
 }
 
@@ -1118,6 +1165,26 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	appendMemory(
+		kind: MemoryEntry["kind"],
+		content: string,
+		sourceEntryIds: string[],
+		supersedes: string[] = [],
+	): string {
+		const entry: MemoryEntry = {
+			type: "memory",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			kind,
+			content,
+			sourceEntryIds,
+			supersedes,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
 	appendCustomEntry(customType: string, data?: unknown): string {
 		const entry: CustomEntry = {
@@ -1281,8 +1348,8 @@ export class SessionManager {
 	 * Build the session context (what gets sent to the LLM).
 	 * Uses tree traversal from current leaf.
 	 */
-	buildSessionContext(): SessionContext {
-		return buildSessionContext(this.getEntries(), this.leafId, this.byId);
+	buildSessionContext(memoryTokenBudget?: number): SessionContext {
+		return buildSessionContext(this.getEntries(), this.leafId, this.byId, memoryTokenBudget);
 	}
 
 	/**

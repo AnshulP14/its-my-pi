@@ -5,6 +5,7 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type CustomEntry,
+	type MemoryEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -66,6 +67,26 @@ function modelChange(id: string, parentId: string | null, provider: string, mode
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
 }
 
+function memory(
+	id: string,
+	parentId: string | null,
+	kind: MemoryEntry["kind"],
+	content: string,
+	sourceEntryIds: string[] = [],
+	supersedes: string[] = [],
+): MemoryEntry {
+	return {
+		type: "memory",
+		id,
+		parentId,
+		timestamp: "2025-01-01T00:00:00Z",
+		kind,
+		content,
+		sourceEntryIds,
+		supersedes,
+	};
+}
+
 describe("buildSessionContext", () => {
 	describe("trivial cases", () => {
 		it("empty entries returns empty context", () => {
@@ -124,6 +145,47 @@ describe("buildSessionContext", () => {
 	});
 
 	describe("with compaction", () => {
+		it("injects active branch memory after the checkpoint and before retained transcript", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				msg("2", "1", "assistant", "response1"),
+				compaction("3", "2", "Summary", "1"),
+				memory("4", "3", "reflection", "Use the session tree for branching.", ["1", "2"]),
+				memory("5", "4", "observation", "The user chose deterministic compaction.", ["1"]),
+				msg("6", "5", "user", "continue"),
+			];
+
+			const ctx = buildSessionContext(entries, "6");
+
+			expect(ctx.messages.map((message) => message.role)).toEqual([
+				"compactionSummary",
+				"custom",
+				"user",
+				"assistant",
+				"user",
+			]);
+			const memoryMessage = ctx.messages[1];
+			expect(memoryMessage.role).toBe("custom");
+			if (memoryMessage.role === "custom") {
+				expect(memoryMessage.display).toBe(false);
+				expect(memoryMessage.content).toContain("## Reflections");
+				expect(memoryMessage.content).toContain("## Observations");
+			}
+		});
+
+		it("does not inject memory from a sibling branch", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "start"),
+				msg("2", "1", "assistant", "response"),
+				memory("3", "2", "reflection", "Only branch A chose this.", ["2"]),
+				msg("4", "3", "user", "branch A"),
+				msg("5", "2", "user", "branch B"),
+			];
+
+			expect(buildSessionContext(entries, "4").messages.some((message) => message.role === "custom")).toBe(true);
+			expect(buildSessionContext(entries, "5").messages.some((message) => message.role === "custom")).toBe(false);
+		});
+
 		it("includes summary before kept messages", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "first"),

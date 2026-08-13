@@ -408,7 +408,7 @@ Response:
 }
 ```
 
-`estimatedTokensAfter` is a heuristic estimate over the rebuilt message context immediately after compaction, not a provider-exact token count. `usage` reports the LLM call or calls that generated the summary and may be omitted by custom compaction handlers.
+`estimatedTokensAfter` is a heuristic estimate over the rebuilt message context immediately after compaction, not a provider-exact token count. Built-in deterministic compaction has no `usage`; custom compaction handlers may include it.
 
 #### set_auto_compaction
 

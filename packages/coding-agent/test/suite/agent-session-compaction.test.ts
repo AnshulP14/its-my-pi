@@ -184,22 +184,25 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.getLastAssistantText()).toBe("queued response");
 	});
 
-	it("throws when compacting without a model", async () => {
+	it("compacts without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		harness.session.agent.state.model = undefined as unknown as Model<any>;
+		seedCompactableSession(harness);
+		harness.session.agent.state.model = undefined as unknown as Model<any>;
 
-		await expect(harness.session.compact()).rejects.toThrow("No model selected");
+		await expect(harness.session.compact()).resolves.toMatchObject({ usage: undefined });
 	});
 
-	it("throws when compacting without configured auth", async () => {
+	it("compacts without configured auth", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
+		seedCompactableSession(harness);
 
-		await expect(harness.session.compact()).rejects.toThrow(`No API key found for ${harness.getModel().provider}.`);
+		await expect(harness.session.compact()).resolves.toMatchObject({ usage: undefined });
 	});
 
-	it("manually compacts with a custom streamFn when registry auth is absent", async () => {
+	it("does not call a custom streamFn during manual compaction", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		seedCompactableSession(harness);
@@ -207,46 +210,22 @@ describe("AgentSession compaction characterization", () => {
 
 		const result = await harness.session.compact();
 
-		expect(result.summary).toContain("summary from custom stream");
-		expect(getStreamCallCount()).toBe(1);
+		expect(result.summary).toContain("message to compact");
+		expect(getStreamCallCount()).toBe(0);
 	});
 
-	it("manually compacts with provider-resolved bearer auth", async () => {
+	it("does not request provider auth during manual compaction", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
-		const model = harness.getModel();
-		harness.session.modelRuntime.registerNativeProvider({
-			id: model.provider,
-			name: "Faux bearer provider",
-			auth: {
-				apiKey: {
-					name: "Faux bearer token",
-					resolve: async () => ({
-						auth: { headers: { Authorization: "Bearer ambient-token" } },
-						source: "ambient bearer token",
-					}),
-				},
-			},
-			getModels: () => harness.models,
-			stream: () => createAssistantMessageEventStream(),
-			streamSimple: () => createAssistantMessageEventStream(),
-		});
 		seedCompactableSession(harness);
-		harness.setResponses([
-			(_context, options) => {
-				expect(options?.apiKey).toBeUndefined();
-				expect(options?.headers).toEqual({ Authorization: "Bearer ambient-token" });
-				return fauxAssistantMessage("summary with bearer auth");
-			},
-		]);
 
 		const result = await harness.session.compact();
 
-		expect(result.summary).toContain("summary with bearer auth");
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(result.summary).toContain("message to compact");
+		expect(harness.faux.state.callCount).toBe(0);
 	});
 
-	it("persists usage from pi-generated manual compaction", async () => {
+	it("does not persist usage from deterministic manual compaction", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		seedCompactableSession(harness);
@@ -255,14 +234,12 @@ describe("AgentSession compaction characterization", () => {
 		const result = await harness.session.compact();
 
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
-		expect(result.usage).toEqual(createUsage(10));
+		expect(result.usage).toBeUndefined();
 		expect(compactionEntries).toHaveLength(1);
-		expect(compactionEntries[0]?.type === "compaction" ? compactionEntries[0].usage : undefined).toEqual(
-			createUsage(10),
-		);
+		expect(compactionEntries[0]?.type === "compaction" ? compactionEntries[0].usage : undefined).toBeUndefined();
 	});
 
-	it("auto-compacts with a custom streamFn when registry auth is absent", async () => {
+	it("does not call a custom streamFn during automatic compaction", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		seedCompactableSession(harness);
@@ -275,7 +252,7 @@ describe("AgentSession compaction characterization", () => {
 		const compactionEnd = harness.eventsOfType("compaction_end").at(-1);
 		expect(compactionEntries).toHaveLength(1);
 		expect(compactionEnd?.result?.estimatedTokensAfter).toBeGreaterThan(0);
-		expect(getStreamCallCount()).toBe(1);
+		expect(getStreamCallCount()).toBe(0);
 	});
 
 	it("compacts and resumes after a length stop below the desired output limit", async () => {

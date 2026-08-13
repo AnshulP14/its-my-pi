@@ -94,6 +94,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { updateSessionMemory } from "./memory.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -146,6 +147,8 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 	  }
 	| { type: "agent_settled" }
+	| { type: "memory_update_start" }
+	| { type: "memory_update_end" }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -327,6 +330,7 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _memoryRun: Promise<void> | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -601,6 +605,58 @@ export class AgentSession {
 		} finally {
 			this._resolveIdleWaitIfIdle();
 		}
+	}
+
+	private async _updateSessionMemory(force = false): Promise<void> {
+		if (this._memoryRun) {
+			await this._memoryRun;
+			if (!force) return;
+		}
+		const model = this.model;
+		if (!model) return;
+		const settings = this.settingsManager.getCompactionSettings().memory;
+		if (!settings.enabled) return;
+		const branchLeafId = this.sessionManager.getLeafId();
+		let memoryUpdateStarted = false;
+		const run = (async () => {
+			try {
+				const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model);
+				if (this.sessionManager.getLeafId() !== branchLeafId) return;
+				const changed = await updateSessionMemory(this.sessionManager, settings, {
+					model: requestModel,
+					apiKey,
+					headers,
+					env,
+					streamFn: this.agent.streamFunction,
+					force,
+					isCurrentBranch: () => this.sessionManager.getLeafId() === branchLeafId,
+					onStart: () => {
+						memoryUpdateStarted = true;
+						this._emit({ type: "memory_update_start" });
+					},
+				});
+				if (changed) {
+					this.agent.state.messages = this.sessionManager.buildSessionContext(
+						settings.injectionMaxTokens,
+					).messages;
+				}
+			} catch {
+				// A failed background run leaves its source entries unprocessed for the next threshold.
+			} finally {
+				if (memoryUpdateStarted) this._emit({ type: "memory_update_end" });
+			}
+		})();
+		this._memoryRun = run;
+		try {
+			await run;
+		} finally {
+			if (this._memoryRun === run) this._memoryRun = undefined;
+		}
+	}
+
+	private _scheduleSessionMemory(): void {
+		if (this._memoryRun) return;
+		void this._updateSessionMemory();
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -1071,6 +1127,7 @@ export class AgentSession {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
 			await this._emitAgentSettled();
+			this._scheduleSessionMemory();
 		}
 	}
 
@@ -1793,11 +1850,7 @@ export class AgentSession {
 		this._emit({ type: "compaction_start", reason: "manual" });
 
 		try {
-			if (!this.model) {
-				throw new Error(formatNoModelSelectedMessage());
-			}
-
-			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
+			await this._updateSessionMemory(true);
 
 			const pathEntries = this.sessionManager.getBranch();
 			const settings = this.settingsManager.getCompactionSettings();
@@ -1851,19 +1904,7 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
-				const result = await compact(
-					preparation,
-					requestModel,
-					apiKey,
-					headers,
-					customInstructions,
-					this._compactionAbortController.signal,
-					this.thinkingLevel,
-					this.agent.streamFunction,
-					env,
-					this.settingsManager.getRetrySettings(),
-					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
-				);
+				const result = compact(preparation);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
@@ -1877,7 +1918,9 @@ export class AgentSession {
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
+			const sessionContext = this.sessionManager.buildSessionContext(
+				this.settingsManager.getCompactionSettings().memory.injectionMaxTokens,
+			);
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
@@ -2060,11 +2103,7 @@ export class AgentSession {
 		let started = false;
 
 		try {
-			if (!this.model) {
-				return false;
-			}
-
-			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
+			await this._updateSessionMemory(true);
 
 			const pathEntries = this.sessionManager.getBranch();
 
@@ -2123,19 +2162,7 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
-				const compactResult = await compact(
-					preparation,
-					requestModel,
-					apiKey,
-					headers,
-					undefined,
-					this._autoCompactionAbortController.signal,
-					this.thinkingLevel,
-					this.agent.streamFunction,
-					env,
-					this.settingsManager.getRetrySettings(),
-					this._summarizationRetryCallbacks({ source: "compaction", reason }),
-				);
+				const compactResult = compact(preparation);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
@@ -2156,7 +2183,9 @@ export class AgentSession {
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
+			const sessionContext = this.sessionManager.buildSessionContext(
+				this.settingsManager.getCompactionSettings().memory.injectionMaxTokens,
+			);
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
@@ -3074,7 +3103,9 @@ export class AgentSession {
 			}
 
 			// Update agent state
-			const sessionContext = this.sessionManager.buildSessionContext();
+			const sessionContext = this.sessionManager.buildSessionContext(
+				this.settingsManager.getCompactionSettings().memory.injectionMaxTokens,
+			);
 			this.agent.state.messages = sessionContext.messages;
 
 			// Emit session_tree event

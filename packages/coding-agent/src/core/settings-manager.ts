@@ -11,8 +11,18 @@ import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dis
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
-	reserveTokens?: number; // default: 16384
-	keepRecentTokens?: number; // default: 20000
+	reserveTokens?: number; // default: 32768
+	keepRecentTokens?: number; // default: 8192
+	memory?: MemorySettings;
+}
+
+export interface MemorySettings {
+	enabled?: boolean; // default: true
+	observeAfterTokens?: number; // default: 15000
+	reflectAfterTokens?: number; // default: 25000
+	observationsPoolMaxTokens?: number; // default: 12000
+	observationsPoolTargetTokens?: number; // default: 6000
+	injectionMaxTokens?: number; // default: 8000
 }
 
 export interface BranchSummarySettings {
@@ -778,18 +788,31 @@ export class SettingsManager {
 	}
 
 	getCompactionReserveTokens(): number {
-		return this.settings.compaction?.reserveTokens ?? 16384;
+		return this.settings.compaction?.reserveTokens ?? 32768;
 	}
 
 	getCompactionKeepRecentTokens(): number {
-		return this.settings.compaction?.keepRecentTokens ?? 20000;
+		return this.settings.compaction?.keepRecentTokens ?? 8192;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		memory: Required<MemorySettings>;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			memory: {
+				enabled: this.settings.compaction?.memory?.enabled ?? true,
+				observeAfterTokens: this.settings.compaction?.memory?.observeAfterTokens ?? 15000,
+				reflectAfterTokens: this.settings.compaction?.memory?.reflectAfterTokens ?? 25000,
+				observationsPoolMaxTokens: this.settings.compaction?.memory?.observationsPoolMaxTokens ?? 12000,
+				observationsPoolTargetTokens: this.settings.compaction?.memory?.observationsPoolTargetTokens ?? 6000,
+				injectionMaxTokens: this.settings.compaction?.memory?.injectionMaxTokens ?? 8000,
+			},
 		};
 	}
 

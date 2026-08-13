@@ -114,15 +114,29 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `compaction.enabled` | boolean | `true` | Enable auto-compaction |
-| `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
-| `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
+| `compaction.reserveTokens` | number | `32768` | Tokens reserved for the next LLM response |
+| `compaction.keepRecentTokens` | number | `8192` | Recent tokens to keep outside the checkpoint |
+| `compaction.memory.enabled` | boolean | `true` | Enable session-local background memory |
+| `compaction.memory.observeAfterTokens` | number | `15000` | New transcript tokens before an observer runs |
+| `compaction.memory.reflectAfterTokens` | number | `25000` | New transcript tokens before a reflector runs |
+| `compaction.memory.observationsPoolMaxTokens` | number | `12000` | Observation pool size that triggers the dropper |
+| `compaction.memory.observationsPoolTargetTokens` | number | `6000` | Observation pool target after dropping stale records |
+| `compaction.memory.injectionMaxTokens` | number | `8000` | Maximum memory tokens injected into context |
 
 ```json
 {
   "compaction": {
     "enabled": true,
-    "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "reserveTokens": 32768,
+    "keepRecentTokens": 8192,
+    "memory": {
+      "enabled": true,
+      "observeAfterTokens": 15000,
+      "reflectAfterTokens": 25000,
+      "observationsPoolMaxTokens": 12000,
+      "observationsPoolTargetTokens": 6000,
+      "injectionMaxTokens": 8000
+    }
   }
 }
 ```

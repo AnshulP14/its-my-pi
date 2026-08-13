@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
-import { getModel } from "@earendil-works/pi-ai/compat";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +7,7 @@ import {
 	type CompactionSettings,
 	calculateContextTokens,
 	compact,
+	compactDeterministically,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	findCutPoint,
@@ -294,6 +294,46 @@ describe("shouldCompact", () => {
 	});
 });
 
+describe("compactDeterministically", () => {
+	it("creates a reproducible checkpoint from exact transcript and file operations", () => {
+		const preparation = {
+			firstKeptEntryId: "kept-entry",
+			messagesToSummarize: [
+				createUserMessage("Fix the login redirect."),
+				{
+					...createAssistantMessage("I found the redirect handler."),
+					content: [
+						{
+							type: "toolCall" as const,
+							id: "tool-1",
+							name: "edit",
+							arguments: { path: "src/login.ts", oldText: "old", newText: "new" },
+						},
+					],
+				},
+			],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 50000,
+			fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set(["src/login.ts"]) },
+			settings: DEFAULT_COMPACTION_SETTINGS,
+		};
+
+		const result = compactDeterministically(preparation);
+
+		expect(result).toMatchObject({
+			firstKeptEntryId: "kept-entry",
+			tokensBefore: 50000,
+			details: { readFiles: [], modifiedFiles: ["src/login.ts"] },
+		});
+		expect(result.usage).toBeUndefined();
+		expect(result.summary).toContain("## Files");
+		expect(result.summary).toContain("src/login.ts");
+		expect(result.summary).toContain("[User]: Fix the login redirect.");
+		expect(result.summary).toContain('edit(path="src/login.ts", oldText="old", newText="new")');
+	});
+});
+
 describe("findCutPoint", () => {
 	it("should find cut point based on actual token differences", () => {
 		// Create entries with cumulative token counts
@@ -538,18 +578,17 @@ describe("Large session fixture", () => {
 });
 
 // ============================================================================
-// LLM integration tests (skipped without API key)
+// Deterministic compaction integration tests
 // ============================================================================
 
-describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
-	it("should generate a compaction result for the large session", async () => {
+describe("Deterministic compaction", () => {
+	it("should generate a compaction result for the large session", () => {
 		const entries = loadLargeSessionEntries();
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = compact(preparation!);
 
 		expect(compactionResult.summary.length).toBeGreaterThan(100);
 		expect(compactionResult.firstKeptEntryId).toBeTruthy();
@@ -562,15 +601,14 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		console.log(compactionResult.summary);
 	}, 60000);
 
-	it("should produce valid session after compaction", async () => {
+	it("should produce valid session after compaction", () => {
 		const entries = loadLargeSessionEntries();
 		const loaded = buildSessionContext(entries);
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = compact(preparation!);
 
 		// Simulate appending compaction to entries by creating a proper entry
 		const lastEntry = entries[entries.length - 1];

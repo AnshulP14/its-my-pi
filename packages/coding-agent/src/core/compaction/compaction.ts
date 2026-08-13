@@ -21,7 +21,6 @@ import {
 	createFileOps,
 	extractFileOpsFromMessage,
 	type FileOperations,
-	formatFileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 } from "./utils.ts";
@@ -96,29 +95,6 @@ export interface CompactionResult<T = unknown> {
 	details?: T;
 }
 
-function combineUsage(first: Usage, second: Usage): Usage {
-	return {
-		input: first.input + second.input,
-		output: first.output + second.output,
-		cacheRead: first.cacheRead + second.cacheRead,
-		cacheWrite: first.cacheWrite + second.cacheWrite,
-		...(first.cacheWrite1h !== undefined || second.cacheWrite1h !== undefined
-			? { cacheWrite1h: (first.cacheWrite1h ?? 0) + (second.cacheWrite1h ?? 0) }
-			: {}),
-		...(first.reasoning !== undefined || second.reasoning !== undefined
-			? { reasoning: (first.reasoning ?? 0) + (second.reasoning ?? 0) }
-			: {}),
-		totalTokens: first.totalTokens + second.totalTokens,
-		cost: {
-			input: first.cost.input + second.cost.input,
-			output: first.cost.output + second.cost.output,
-			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
-			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
-			total: first.cost.total + second.cost.total,
-		},
-	};
-}
-
 // ============================================================================
 // Types
 // ============================================================================
@@ -131,9 +107,11 @@ export interface CompactionSettings {
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
-	reserveTokens: 16384,
-	keepRecentTokens: 20000,
+	reserveTokens: 32768,
+	keepRecentTokens: 8192,
 };
+
+const DETERMINISTIC_TRANSCRIPT_MAX_TOKENS = 8192;
 
 // ============================================================================
 // Token calculation
@@ -792,20 +770,48 @@ export function prepareCompaction(
 // Main compaction function
 // ============================================================================
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+/**
+ * Produce the built-in compaction checkpoint without an LLM call.
+ *
+ * Semantic conclusions belong to session memory. This checkpoint intentionally
+ * preserves only mechanically observable data: file operations and transcript.
+ */
+export function compactDeterministically(preparation: CompactionPreparation): CompactionResult<CompactionDetails> {
+	const { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, tokensBefore, fileOps } = preparation;
+	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+	const sourceMessages = [...messagesToSummarize, ...turnPrefixMessages];
+	const transcriptMessages: AgentMessage[] = [];
+	let transcriptTokens = 0;
+	for (let index = sourceMessages.length - 1; index >= 0; index--) {
+		const message = sourceMessages[index];
+		const messageTokens = estimateTokens(message);
+		if (transcriptTokens + messageTokens > DETERMINISTIC_TRANSCRIPT_MAX_TOKENS && transcriptMessages.length > 0) {
+			break;
+		}
+		transcriptMessages.unshift(message);
+		transcriptTokens += messageTokens;
+	}
+	const serializedTranscript = serializeConversation(convertToLlm(transcriptMessages));
+	const transcript = serializedTranscript.slice(-DETERMINISTIC_TRANSCRIPT_MAX_TOKENS * 4);
+	const fileSections = [
+		"## Files",
+		readFiles.length > 0 ? `### Read\n${readFiles.map((path) => `- ${path}`).join("\n")}` : "",
+		modifiedFiles.length > 0 ? `### Modified\n${modifiedFiles.map((path) => `- ${path}`).join("\n")}` : "",
+	]
+		.filter(Boolean)
+		.join("\n\n");
 
-Summarize the prefix to provide context for the retained suffix:
-
-## Original Request
-[What did the user ask for in this turn?]
-
-## Early Progress
-- [Key decisions and work done in the prefix]
-
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-
-Be concise. Focus on what's needed to understand the kept suffix.`;
+	return {
+		summary: `${fileSections}\n\n## Transcript\n${
+			transcriptMessages.length < sourceMessages.length || transcript.length < serializedTranscript.length
+				? "[Earlier transcript omitted]\n\n"
+				: ""
+		}${transcript}`,
+		firstKeptEntryId,
+		tokensBefore,
+		details: { readFiles, modifiedFiles },
+	};
+}
 
 /**
  * Generate summaries for compaction using prepared data.
@@ -814,156 +820,6 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
  */
-export async function compact(
-	preparation: CompactionPreparation,
-	model: Model<any>,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	customInstructions?: string,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-	env?: Record<string, string>,
-	retry?: RetryPolicy,
-	callbacks?: RetryCallbacks,
-): Promise<CompactionResult> {
-	const {
-		firstKeptEntryId,
-		messagesToSummarize,
-		turnPrefixMessages,
-		isSplitTurn,
-		tokensBefore,
-		previousSummary,
-		fileOps,
-		settings,
-	} = preparation;
-
-	// Generate summaries and merge into one
-	let summary: string;
-	let summaryUsage: Usage;
-
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
-		let historyUsage: Usage | undefined;
-		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummaryWithUsage(
-				messagesToSummarize,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				signal,
-				customInstructions,
-				previousSummary,
-				thinkingLevel,
-				streamFn,
-				env,
-				retry,
-				callbacks,
-			);
-			historyText = historyResult.text;
-			historyUsage = historyResult.usage;
-		}
-		const turnPrefixResult = await generateTurnPrefixSummary(
-			turnPrefixMessages,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			env,
-			signal,
-			thinkingLevel,
-			streamFn,
-			retry,
-			callbacks,
-		);
-		// Merge into single summary
-		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
-		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
-	} else {
-		// Just generate history summary
-		const result = await generateSummaryWithUsage(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			signal,
-			customInstructions,
-			previousSummary,
-			thinkingLevel,
-			streamFn,
-			env,
-			retry,
-			callbacks,
-		);
-		summary = result.text;
-		summaryUsage = result.usage;
-	}
-
-	// Compute file lists and append to summary
-	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-	summary += formatFileOperations(readFiles, modifiedFiles);
-
-	if (!firstKeptEntryId) {
-		throw new Error("First kept entry has no UUID - session may need migration");
-	}
-
-	return {
-		summary,
-		firstKeptEntryId,
-		tokensBefore,
-		usage: summaryUsage,
-		details: { readFiles, modifiedFiles } as CompactionDetails,
-	};
-}
-
-/**
- * Generate a summary for a turn prefix (when splitting a turn).
- */
-async function generateTurnPrefixSummary(
-	messages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	env?: Record<string, string>,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-	retry?: RetryPolicy,
-	callbacks?: RetryCallbacks,
-): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
-		streamFn,
-		retry,
-		callbacks,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	return {
-		text: contentText(response.content),
-		usage: response.usage,
-	};
+export function compact(preparation: CompactionPreparation): CompactionResult<CompactionDetails> {
+	return compactDeterministically(preparation);
 }
