@@ -424,7 +424,7 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 
 const MEMORY_CONTEXT_MAX_TOKENS = 8000;
 
-function buildMemoryContextMessage(path: SessionEntry[], maxTokens: number): AgentMessage | undefined {
+export function buildMemoryContextMessage(path: SessionEntry[], maxTokens: number): AgentMessage | undefined {
 	const memoryEntries = path.filter((entry): entry is MemoryEntry => entry.type === "memory");
 	if (memoryEntries.length === 0) return undefined;
 

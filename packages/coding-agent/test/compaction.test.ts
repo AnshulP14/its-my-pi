@@ -19,6 +19,7 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type CustomMessageEntry,
+	type MemoryEntry,
 	type ModelChangeEntry,
 	migrateSessionEntries,
 	parseSessionEntries,
@@ -145,6 +146,22 @@ function createCustomMessageEntry(content: string): CustomMessageEntry {
 		customType: "test",
 		content,
 		display: true,
+	};
+	lastId = id;
+	return entry;
+}
+
+function createMemoryEntry(kind: MemoryEntry["kind"], content: string): MemoryEntry {
+	const id = `test-id-${entryCounter++}`;
+	const entry: MemoryEntry = {
+		type: "memory",
+		id,
+		parentId: lastId,
+		timestamp: new Date().toISOString(),
+		kind,
+		content,
+		sourceEntryIds: [],
+		supersedes: [],
 	};
 	lastId = id;
 	return entry;
@@ -331,6 +348,20 @@ describe("compactDeterministically", () => {
 		expect(result.summary).toContain("src/login.ts");
 		expect(result.summary).toContain("[User]: Fix the login redirect.");
 		expect(result.summary).toContain('edit(path="src/login.ts", oldText="old", newText="new")');
+	});
+
+	it("includes active session memory in the checkpoint", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Fix the login redirect.")),
+			createMemoryEntry("observation", "The redirect must preserve the return URL."),
+			createMemoryEntry("reflection", "Preserve return URLs in login redirects."),
+			createMessageEntry(createAssistantMessage("I found the redirect handler.")),
+		];
+		const preparation = prepareCompaction(entries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 });
+
+		expect(compactDeterministically(preparation!).summary).toContain(
+			"## Session Memory\n## Reflections\n- Preserve return URLs in login redirects.\n\n## Observations\n- The redirect must preserve the return URL.",
+		);
 	});
 });
 

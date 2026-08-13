@@ -11,6 +11,7 @@ import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } fro
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.ts";
 import {
+	buildMemoryContextMessage,
 	buildSessionContext,
 	type CompactionEntry,
 	type SessionEntry,
@@ -112,6 +113,7 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 };
 
 const DETERMINISTIC_TRANSCRIPT_MAX_TOKENS = 8192;
+const DETERMINISTIC_MEMORY_MAX_TOKENS = 2000;
 
 // ============================================================================
 // Token calculation
@@ -681,6 +683,8 @@ export interface CompactionPreparation {
 	previousSummary?: string;
 	/** File operations extracted from messagesToSummarize */
 	fileOps: FileOperations;
+	/** Active session memory retained in the checkpoint for inspection. */
+	sessionMemory?: string;
 	/** Compaction settions from settings.jsonl	*/
 	settings: CompactionSettings;
 }
@@ -746,6 +750,8 @@ export function prepareCompaction(
 
 	// Extract file operations from messages and previous compaction
 	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
+	const memoryMessage = buildMemoryContextMessage(pathEntries, DETERMINISTIC_MEMORY_MAX_TOKENS);
+	const sessionMemory = memoryMessage?.role === "custom" ? contentText(memoryMessage.content, "") : undefined;
 
 	// Also extract file ops from turn prefix if splitting
 	if (cutPoint.isSplitTurn) {
@@ -762,6 +768,7 @@ export function prepareCompaction(
 		tokensBefore,
 		previousSummary,
 		fileOps,
+		sessionMemory,
 		settings,
 	};
 }
@@ -777,7 +784,8 @@ export function prepareCompaction(
  * preserves only mechanically observable data: file operations and transcript.
  */
 export function compactDeterministically(preparation: CompactionPreparation): CompactionResult<CompactionDetails> {
-	const { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, tokensBefore, fileOps } = preparation;
+	const { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, tokensBefore, fileOps, sessionMemory } =
+		preparation;
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	const sourceMessages = [...messagesToSummarize, ...turnPrefixMessages];
 	const transcriptMessages: AgentMessage[] = [];
@@ -802,7 +810,7 @@ export function compactDeterministically(preparation: CompactionPreparation): Co
 		.join("\n\n");
 
 	return {
-		summary: `${fileSections}\n\n## Transcript\n${
+		summary: `${fileSections}${sessionMemory ? `\n\n## Session Memory\n${sessionMemory}` : ""}\n\n## Transcript\n${
 			transcriptMessages.length < sourceMessages.length || transcript.length < serializedTranscript.length
 				? "[Earlier transcript omitted]\n\n"
 				: ""
