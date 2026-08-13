@@ -531,7 +531,9 @@ export function buildSessionContext(
 	}
 	const memoryMessage = buildMemoryContextMessage(path, memoryTokenBudget);
 	if (memoryMessage) {
-		const insertionIndex = messages.findIndex((message) => message.role === "project-memory");
+		const insertionIndex = messages.findIndex(
+			(message) => message.role === "custom" && message.customType === "project-memory",
+		);
 		messages.splice(insertionIndex >= 0 ? insertionIndex + 1 : 0, 0, memoryMessage);
 	}
 	return { messages, thinkingLevel, model };

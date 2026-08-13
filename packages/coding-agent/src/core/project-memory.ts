@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "../config.ts";
 
 export type ProjectMemoryKind = "convention" | "decision" | "failure" | "procedure";
-export type ProjectMemoryTier = "candidate" | "archive" | "core";
+export type ProjectMemoryTier = "candidate" | "archive" | "core" | "forgotten";
 
 export interface ProjectMemoryRecord {
 	id: string;
@@ -108,16 +108,16 @@ export class ProjectMemory {
 		const normalized = normalize(content);
 		const exact = this.db
 			.prepare("SELECT id, content, kind, tier, createdAt, lastConfirmedAt FROM records WHERE normalized = ?")
-			.get<RecordRow>(normalized);
+			.get(normalized) as RecordRow | undefined;
 		const match = searchQuery(content);
 		const existing =
 			exact ??
 			(match
-				? this.db
+				? (this.db
 						.prepare(
 							"SELECT r.id, r.content, r.kind, r.tier, r.createdAt, r.lastConfirmedAt FROM record_search s JOIN records r ON r.id = s.id WHERE record_search MATCH ? AND r.tier = 'candidate' ORDER BY bm25(record_search) LIMIT 1",
 						)
-						.get<RecordRow>(match)
+						.get(match) as RecordRow | undefined)
 				: undefined);
 		const record = existing ?? {
 			id: createHash("sha256").update(`${normalized}\0${now()}`).digest("hex").slice(0, 16),
@@ -170,10 +170,10 @@ export class ProjectMemory {
 			.prepare(
 				"SELECT r.id, r.content, r.kind, r.tier, r.createdAt, r.lastConfirmedAt FROM records r JOIN evidence e ON e.recordId = r.id WHERE r.tier = 'candidate' GROUP BY r.id HAVING count(DISTINCT e.sessionId) >= 2 ORDER BY r.createdAt",
 			)
-			.all<RecordRow>();
+			.all() as unknown as RecordRow[];
 	}
 
-	approve(id: string, tier: Exclude<ProjectMemoryTier, "candidate">): void {
+	approve(id: string, tier: "archive" | "core"): void {
 		this.db.exec("BEGIN IMMEDIATE");
 		try {
 			this.db.prepare("UPDATE records SET tier = ?, lastConfirmedAt = ? WHERE id = ?").run(tier, now(), id);
@@ -185,12 +185,21 @@ export class ProjectMemory {
 		}
 	}
 
+	demote(id: string): void {
+		this.approve(id, "archive");
+	}
+
+	forget(id: string): void {
+		this.db.prepare("UPDATE records SET tier = ? WHERE id = ?").run("forgotten", id);
+		this.db.prepare("INSERT INTO events VALUES (?, ?, ?)").run(now(), id, "forgotten");
+	}
+
 	core(): ProjectMemoryRecord[] {
 		return this.db
 			.prepare(
 				"SELECT id, content, kind, tier, createdAt, lastConfirmedAt FROM records WHERE tier = 'core' ORDER BY lastConfirmedAt DESC",
 			)
-			.all<RecordRow>();
+			.all() as unknown as RecordRow[];
 	}
 
 	search(query: string, limit = 3): ProjectMemoryRecord[] {
@@ -200,7 +209,7 @@ export class ProjectMemory {
 			.prepare(
 				"SELECT r.id, r.content, r.kind, r.tier, r.createdAt, r.lastConfirmedAt FROM record_search s JOIN records r ON r.id = s.id WHERE record_search MATCH ? AND r.tier IN ('archive', 'core') ORDER BY bm25(record_search) LIMIT ?",
 			)
-			.all<RecordRow>(match, limit);
+			.all(match, limit) as unknown as RecordRow[];
 	}
 
 	records(ids: readonly string[]): ProjectMemoryRecord[] {
@@ -210,13 +219,13 @@ export class ProjectMemory {
 			.prepare(
 				`SELECT id, content, kind, tier, createdAt, lastConfirmedAt FROM records WHERE id IN (${placeholders})`,
 			)
-			.all<RecordRow>(...ids);
+			.all(...ids) as unknown as RecordRow[];
 		return ids.flatMap((id) => found.filter((record) => record.id === id));
 	}
 
 	evidence(id: string): ProjectMemoryEvidence[] {
 		return this.db
 			.prepare("SELECT sessionId, entryId, excerpt, revision, command, exitCode FROM evidence WHERE recordId = ?")
-			.all<ProjectMemoryEvidence>(id);
+			.all(id) as unknown as ProjectMemoryEvidence[];
 	}
 }

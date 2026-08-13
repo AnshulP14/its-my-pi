@@ -53,4 +53,22 @@ describe("ProjectMemory", () => {
 		expect(memory.readyCandidates()).toEqual([expect.objectContaining({ id: first.id })]);
 		memory.close();
 	});
+
+	it("demotes and forgets approved memory", () => {
+		const dir = join(tmpdir(), `pi-project-memory-${Date.now()}-${Math.random()}`);
+		paths.push(dir);
+		mkdirSync(dir, { recursive: true });
+		const memory = ProjectMemory.openPath(join(dir, "memory.sqlite"));
+		const record = memory.addCandidate("Run npm run check after code changes.", "convention", {
+			sessionId: "session-a",
+			entryId: "entry-a",
+			excerpt: "first",
+		});
+		memory.approve(record.id, "core");
+		memory.demote(record.id);
+		expect(memory.search("npm check")).toEqual([expect.objectContaining({ tier: "archive" })]);
+		memory.forget(record.id);
+		expect(memory.search("npm check")).toEqual([]);
+		memory.close();
+	});
 });

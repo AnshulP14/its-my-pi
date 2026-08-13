@@ -424,7 +424,10 @@ export class AgentSession {
 			.slice()
 			.reverse()
 			.find((candidate) => candidate.type === "custom" && candidate.customType === "project-memory");
-		const ids = entry?.data && typeof entry.data === "object" && "ids" in entry.data ? entry.data.ids : undefined;
+		const ids =
+			entry?.type === "custom" && entry.data && typeof entry.data === "object" && "ids" in entry.data
+				? entry.data.ids
+				: undefined;
 		if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) this._projectMemoryPacketIds = ids;
 	}
 
@@ -456,15 +459,36 @@ export class AgentSession {
 		this.sessionManager.setProjectMemoryContext({ content, timestamp: new Date().toISOString() });
 	}
 
+	private _refreshProjectMemoryAfterCompaction(summary: string): void {
+		if (this._projectMemoryPacketIds.length === 0) return;
+		this._refreshProjectMemoryContext(summary);
+	}
+
+	private async _forgetProjectMemory(text: string): Promise<void> {
+		if (!this._projectMemory || this._extensionMode !== "tui" || !this._extensionUIContext) return;
+		const query = text.replace(/^\s*forget(?:\s+(?:that|the))?(?:\s+memory)?\s*/i, "").trim();
+		if (!query) return;
+		const record = this._projectMemory.search(query, 1)[0];
+		if (!record) return;
+		if (await this._extensionUIContext.confirm("Forget project memory?", `[${record.id}] ${record.content}`)) {
+			this._projectMemory.forget(record.id);
+			this._projectMemoryPacketIds = this._projectMemoryPacketIds.filter((id) => id !== record.id);
+			this._refreshProjectMemoryContext();
+		}
+	}
+
 	private async _promoteProjectMemory(): Promise<void> {
-		if (!this._projectMemory || this._extensionMode !== "interactive" || !this._extensionUIContext) return;
+		if (!this._projectMemory || this._extensionMode !== "tui" || !this._extensionUIContext) return;
 		for (const entry of this.sessionManager.getBranch()) {
 			if (entry.type !== "memory" || entry.kind !== "reflection" || !entry.projectKind) continue;
 			const source = entry.sourceEntryIds.map((id) => this.sessionManager.getEntry(id)).find(Boolean);
 			this._projectMemory.addCandidate(entry.content, entry.projectKind, {
 				sessionId: this.sessionId,
 				entryId: source?.id ?? entry.id,
-				excerpt: source?.type === "message" ? contentText(source.message.content, entry.content) : entry.content,
+				excerpt:
+					source?.type === "message" && "content" in source.message
+						? contentText(source.message.content, entry.content)
+						: entry.content,
 				revision: projectRevision(this._cwd),
 			});
 		}
@@ -481,7 +505,19 @@ export class AgentSession {
 					.reduce((total, record) => total + Math.ceil(record.content.length / 4), 0);
 				if (coreTokens + Math.ceil(candidate.content.length / 4) <= 1200)
 					this._projectMemory.approve(candidate.id, "core");
-				else this._extensionUIContext.notify("Project core memory is full; candidate was not promoted.", "warning");
+				else {
+					const core = this._projectMemory.core();
+					const options = core.map((record) => `[${record.id}] ${record.content}`);
+					const demote = await this._extensionUIContext.select(
+						"Project core memory is full. Choose a record to demote to archive.",
+						options,
+					);
+					const index = demote ? options.indexOf(demote) : -1;
+					if (index >= 0) {
+						this._projectMemory.demote(core[index].id);
+						this._projectMemory.approve(candidate.id, "core");
+					}
+				}
 			}
 			if (choice === "Edit and approve archive") {
 				const content = await this._extensionUIContext.input("Edit project memory", candidate.content);
@@ -1351,6 +1387,9 @@ export class AgentSession {
 			if (lastAssistant) {
 				await this._checkCompaction(lastAssistant, false);
 			}
+			if (/^\s*forget(?:\s+(?:that|the))?(?:\s+memory)?\s+/i.test(expandedText)) {
+				await this._forgetProjectMemory(expandedText);
+			}
 			if (
 				!this.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "user")
 			) {
@@ -2016,6 +2055,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this._refreshProjectMemoryAfterCompaction(summary);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext(
 				this.settingsManager.getCompactionSettings().memory.injectionMaxTokens,
@@ -2281,6 +2321,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this._refreshProjectMemoryAfterCompaction(summary);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext(
 				this.settingsManager.getCompactionSettings().memory.injectionMaxTokens,
