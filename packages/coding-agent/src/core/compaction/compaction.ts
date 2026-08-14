@@ -113,7 +113,7 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 };
 
 const DETERMINISTIC_TRANSCRIPT_MAX_TOKENS = 8192;
-const DETERMINISTIC_MEMORY_MAX_TOKENS = 2000;
+const DETERMINISTIC_MEMORY_MAX_TOKENS = 24000;
 const DETERMINISTIC_REQUEST_MAX_CHARS = 2000;
 
 function latestUserRequest(messages: AgentMessage[]): string | undefined {

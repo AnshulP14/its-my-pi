@@ -22,7 +22,7 @@ export interface MemorySettings {
 	reflectAfterTokens?: number; // default: 25000
 	observationsPoolMaxTokens?: number; // default: 16000
 	observationsPoolTargetTokens?: number; // default: 12000
-	injectionMaxTokens?: number; // default: 16000
+	injectionMaxTokens?: number; // default: 24000
 }
 
 export interface BranchSummarySettings {
@@ -811,7 +811,7 @@ export class SettingsManager {
 				reflectAfterTokens: this.settings.compaction?.memory?.reflectAfterTokens ?? 25000,
 				observationsPoolMaxTokens: this.settings.compaction?.memory?.observationsPoolMaxTokens ?? 16000,
 				observationsPoolTargetTokens: this.settings.compaction?.memory?.observationsPoolTargetTokens ?? 12000,
-				injectionMaxTokens: this.settings.compaction?.memory?.injectionMaxTokens ?? 16000,
+				injectionMaxTokens: this.settings.compaction?.memory?.injectionMaxTokens ?? 24000,
 			},
 		};
 	}

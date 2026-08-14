@@ -93,7 +93,7 @@ export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 
 export interface MemoryEntry extends SessionEntryBase {
 	type: "memory";
-	kind: "observation" | "reflection" | "supersedes";
+	kind: "observation" | "reflection" | "trace" | "supersedes";
 	content: string;
 	projectKind?: "convention" | "decision" | "failure" | "procedure";
 	sourceEntryIds: string[];
@@ -422,7 +422,13 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	return [];
 }
 
-const MEMORY_CONTEXT_MAX_TOKENS = 16000;
+const MEMORY_CONTEXT_MAX_TOKENS = 24000;
+
+const MEMORY_SECTION_BUDGETS = [
+	{ kind: "trace", heading: "Session Trace", tokens: 8000, chronological: true },
+	{ kind: "reflection", heading: "Reflections", tokens: 4000, chronological: false },
+	{ kind: "observation", heading: "Observations", tokens: 12000, chronological: false },
+] as const;
 
 export function buildMemoryContextMessage(path: SessionEntry[], maxTokens: number): AgentMessage | undefined {
 	const memoryEntries = path.filter((entry): entry is MemoryEntry => entry.type === "memory");
@@ -431,17 +437,23 @@ export function buildMemoryContextMessage(path: SessionEntry[], maxTokens: numbe
 	const superseded = new Set(memoryEntries.flatMap((entry) => (entry.kind === "supersedes" ? entry.supersedes : [])));
 	const active = memoryEntries.filter((entry) => entry.kind !== "supersedes" && !superseded.has(entry.id));
 	const selected: MemoryEntry[] = [];
-	let remainingChars = maxTokens * 4;
 	const sections: string[] = [];
-	for (const kind of ["reflection", "observation"] as const) {
-		const heading = kind === "reflection" ? "Reflections" : "Observations";
+	for (const { kind, heading, tokens, chronological } of MEMORY_SECTION_BUDGETS) {
+		let remainingChars = Math.floor((maxTokens * tokens * 4) / MEMORY_CONTEXT_MAX_TOKENS);
 		const lines: string[] = [];
 		for (const entry of active.filter((candidate) => candidate.kind === kind).reverse()) {
 			const line = `- [${entry.id}] ${entry.content}`;
 			const prefix = lines.length === 0 ? (sections.length > 0 ? 2 : 0) + `## ${heading}\n`.length : 1;
-			if (prefix + line.length > remainingChars) continue;
+			if (prefix + line.length > remainingChars) {
+				if (chronological) break;
+				continue;
+			}
 			selected.push(entry);
-			lines.push(line);
+			if (chronological) {
+				lines.unshift(line);
+			} else {
+				lines.push(line);
+			}
 			remainingChars -= prefix + line.length;
 		}
 		if (lines.length > 0) sections.push(`## ${heading}\n${lines.join("\n")}`);

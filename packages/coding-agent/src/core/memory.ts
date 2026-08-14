@@ -134,6 +134,7 @@ export async function updateSessionMemory(
 	const requestOptions = { apiKey: options.apiKey, headers: options.headers, env: options.env };
 	const shouldObserve = sources.length > 0 && (options.force || sourceTokens >= settings.observeAfterTokens);
 	let newObservations: string[] = [];
+	let newTrace: string[] = [];
 	let observedSourceEntryIds: string[] = [];
 	let reflectionSourceEntryIds: string[] = [];
 	let started = false;
@@ -149,7 +150,7 @@ export async function updateSessionMemory(
 		start();
 		const observationText = await completeMemoryRequest(
 			options.model,
-			`Extract concise, factual observations from this session span. Return JSON: {"observations":["..."]}.\n\n${
+			`Extract concise, factual observations from this session span. Preserve decision-relevant quantitative facts when present: metric, value, unit or currency, period or as-of date, source reference, valuation assumptions or results, and decisive constraints. Do not infer or invent numbers, sources, or precision. Also return compact chronological trace lines for material state changes only: scope, evidence, decisions or reversals, deliverables, and unresolved next steps. Omit routine actions. Return JSON: {"observations":["..."],"trace":["..."]}.\n\n${
 				sourceEntryIds.length < sources.length ? "[Earlier transcript omitted]\n\n" : ""
 			}${sourceText}`,
 			requestOptions,
@@ -157,6 +158,7 @@ export async function updateSessionMemory(
 		);
 		if (!isCurrentBranch()) return false;
 		newObservations = parseStringArray(observationText, "observations");
+		newTrace = parseStringArray(observationText, "trace");
 	}
 	const memories = activeMemory(sessionManager.getBranch());
 	const reflections: Reflection[] = [];
@@ -201,6 +203,9 @@ export async function updateSessionMemory(
 	}
 	for (const observation of newObservations) {
 		sessionManager.appendMemory("observation", observation, observedSourceEntryIds);
+	}
+	for (const trace of newTrace) {
+		sessionManager.appendMemory("trace", trace, observedSourceEntryIds);
 	}
 	const observations = activeMemory(sessionManager.getBranch()).filter((entry) => entry.kind === "observation");
 	const observationTokens = observations.reduce((total, entry) => total + Math.ceil(entry.content.length / 4), 0);

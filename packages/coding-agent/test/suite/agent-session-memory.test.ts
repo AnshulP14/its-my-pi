@@ -28,18 +28,36 @@ describe("AgentSession memory", () => {
 		harnesses.push(harness);
 		harness.setResponses([
 			fauxAssistantMessage("main response"),
-			fauxAssistantMessage('{"observations":["User is fixing the login redirect."]}'),
+			(context) => {
+				expect(context.messages.at(-1)?.content).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							text: expect.stringContaining("metric, value, unit or currency, period or as-of date"),
+						}),
+					]),
+				);
+				return fauxAssistantMessage(
+					'{"observations":["User is fixing the login redirect."],"trace":["User began fixing the login redirect."]}',
+				);
+			},
 		]);
 
 		await harness.session.prompt("Fix the login redirect.");
 		await waitForMemory(harness);
 
 		const records = harness.sessionManager.getEntries().filter((entry) => entry.type === "memory");
-		expect(records).toHaveLength(1);
-		expect(records[0]).toMatchObject({
-			kind: "observation",
-			content: "User is fixing the login redirect.",
-		});
+		expect(records).toContainEqual(
+			expect.objectContaining({
+				kind: "observation",
+				content: "User is fixing the login redirect.",
+			}),
+		);
+		expect(records).toContainEqual(
+			expect.objectContaining({
+				kind: "trace",
+				content: "User began fixing the login redirect.",
+			}),
+		);
 		expect(harness.session.messages.some((message) => message.role === "custom")).toBe(true);
 		expect(harness.eventsOfType("memory_update_start")).toHaveLength(1);
 		expect(harness.eventsOfType("memory_update_end")).toHaveLength(1);

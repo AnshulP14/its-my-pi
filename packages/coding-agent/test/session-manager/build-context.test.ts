@@ -151,11 +151,11 @@ describe("buildSessionContext", () => {
 				memory("2", "1", "reflection", "Second complete reflection."),
 			];
 
-			const ctx = buildSessionContext(entries, undefined, undefined, 15);
+			const ctx = buildSessionContext(entries, undefined, undefined, 100);
 			const memoryMessage = ctx.messages[0];
 			expect(memoryMessage.role).toBe("custom");
 			if (memoryMessage.role === "custom") {
-				expect(memoryMessage.content.length).toBeLessThanOrEqual(60);
+				expect(memoryMessage.content.length).toBeLessThanOrEqual(400);
 				expect(memoryMessage.content).toContain("Second complete reflection.");
 				expect(memoryMessage.content).not.toContain("First complete");
 			}
@@ -166,12 +166,14 @@ describe("buildSessionContext", () => {
 				msg("1", null, "user", "first"),
 				msg("2", "1", "assistant", "response1"),
 				compaction("3", "2", "Summary", "1"),
-				memory("4", "3", "reflection", "Use the session tree for branching.", ["1", "2"]),
-				memory("5", "4", "observation", "The user chose deterministic compaction.", ["1"]),
-				msg("6", "5", "user", "continue"),
+				memory("4", "3", "trace", "The user chose deterministic compaction.", ["1"]),
+				memory("5", "4", "trace", "The session tree was selected for branching.", ["1", "2"]),
+				memory("6", "5", "reflection", "Use the session tree for branching.", ["1", "2"]),
+				memory("7", "6", "observation", "The user chose deterministic compaction.", ["1"]),
+				msg("8", "7", "user", "continue"),
 			];
 
-			const ctx = buildSessionContext(entries, "6");
+			const ctx = buildSessionContext(entries, "8");
 
 			expect(ctx.messages.map((message) => message.role)).toEqual([
 				"compactionSummary",
@@ -184,8 +186,27 @@ describe("buildSessionContext", () => {
 			expect(memoryMessage.role).toBe("custom");
 			if (memoryMessage.role === "custom") {
 				expect(memoryMessage.display).toBe(false);
-				expect(memoryMessage.content).toContain("## Reflections\n- [4] Use the session tree for branching.");
-				expect(memoryMessage.content).toContain("## Observations\n- [5] The user chose deterministic compaction.");
+				expect(memoryMessage.content).toContain(
+					"## Session Trace\n- [4] The user chose deterministic compaction.\n- [5] The session tree was selected for branching.",
+				);
+				expect(memoryMessage.content).toContain("## Reflections\n- [6] Use the session tree for branching.");
+				expect(memoryMessage.content).toContain("## Observations\n- [7] The user chose deterministic compaction.");
+			}
+		});
+
+		it("does not backfill older trace lines after the recent suffix exceeds its budget", () => {
+			const entries: SessionEntry[] = [
+				memory("old", null, "trace", "Older trace line."),
+				memory("new", "old", "trace", "x".repeat(130)),
+				memory("observation", "new", "observation", "A retained observation."),
+			];
+
+			const ctx = buildSessionContext(entries, undefined, undefined, 90);
+			const memoryMessage = ctx.messages[0];
+			expect(memoryMessage.role).toBe("custom");
+			if (memoryMessage.role === "custom") {
+				expect(memoryMessage.content).toContain("A retained observation.");
+				expect(memoryMessage.content).not.toContain("Older trace line.");
 			}
 		});
 
