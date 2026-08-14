@@ -71,4 +71,14 @@ describe("ProjectMemory", () => {
 		expect(memory.search("npm check")).toEqual([]);
 		memory.close();
 	});
+
+	it("treats FTS5 operator keywords as search terms", () => {
+		const dir = join(tmpdir(), `pi-project-memory-${Date.now()}-${Math.random()}`);
+		paths.push(dir);
+		mkdirSync(dir, { recursive: true });
+		const memory = ProjectMemory.openPath(join(dir, "memory.sqlite"));
+
+		expect(memory.search("OR")).toEqual([]);
+		memory.close();
+	});
 });

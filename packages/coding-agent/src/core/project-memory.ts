@@ -50,7 +50,7 @@ function normalize(text: string): string {
 
 function searchQuery(text: string): string | undefined {
 	const terms = text.match(/[\p{L}\p{N}_-]+/gu)?.slice(0, 12) ?? [];
-	return terms.length > 0 ? terms.join(" OR ") : undefined;
+	return terms.length > 0 ? terms.map((term) => `"${term}"`).join(" OR ") : undefined;
 }
 
 function now(): string {
